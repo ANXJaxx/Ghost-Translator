@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BW Empire Ghost Translator
  * Description: 100% Safe, 0 DB-Bloat translations using DeepL API, Static Disk Caching, and Translation Bubbles.
- * Version: 1.4.6
+ * Version: 1.4.7
  * Author: BW Empire
  */
 
@@ -76,24 +76,6 @@ function bw_ghost_delete_dir($dirPath) {
 // 2. THE 100% SAFE VIRTUAL URL ROUTER
 // ==========================================
 
-// 🚀 RAW PHP REDIRECT: Catch HTTP before WordPress even boots up
-add_action('plugins_loaded', 'bw_ghost_force_ssl_early', 1);
-function bw_ghost_force_ssl_early() {
-    if (!is_ssl() && (!isset($_SERVER['HTTP_X_FORWARDED_PROTO']) || $_SERVER['HTTP_X_FORWARDED_PROTO'] !== 'https')) {
-        $uri = $_SERVER['REQUEST_URI'];
-        $langs_setting = get_option('bw_ghost_languages', '');
-        if (empty($langs_setting)) return;
-        
-        $langs = array_map('trim', explode(',', strtoupper($langs_setting)));
-        foreach ($langs as $lang) {
-            if (strpos($uri, '/' . strtolower($lang) . '/') === 0) {
-                header("Location: https://" . $_SERVER['HTTP_HOST'] . $uri, true, 301);
-                exit;
-            }
-        }
-    }
-}
-
 add_filter('do_parse_request', 'bw_ghost_catch_virtual_url', 1, 2);
 function bw_ghost_catch_virtual_url($do_parse, $wp) {
     if (is_admin()) return $do_parse;
@@ -121,7 +103,10 @@ function bw_ghost_catch_virtual_url($do_parse, $wp) {
 add_action('template_redirect', 'bw_ghost_start_buffer', 0);
 function bw_ghost_start_buffer() {
     if (defined('BW_GHOST_TARGET_LANG')) {
+        // Prevent WordPress from throwing a 404 on virtual URLs
         remove_action('template_redirect', 'redirect_canonical');
+        
+        // Start collecting the HTML before it goes to the user's browser
         ob_start('bw_ghost_translate_html');
     }
 }

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BW Empire Ghost Translator
  * Description: 100% Safe, 0 DB-Bloat translations using DeepL API, Static Disk Caching, and Translation Bubbles.
- * Version: 1.4.4
+ * Version: 1.4.5
  * Author: BW Empire
  */
 
@@ -88,6 +88,15 @@ function bw_ghost_catch_virtual_url($do_parse, $wp) {
     foreach ($langs as $lang) {
         $prefix = '/' . strtolower($lang) . '/';
         if (strpos($uri, $prefix) === 0) {
+            
+            // 🚀 NEW FIX: FORCE HTTPS BEFORE WE TOUCH THE URL
+            // If they typed "http://", we instantly redirect to "https://"
+            // before stripping the language code so Chrome doesn't panic.
+            if (!is_ssl() && (!isset($_SERVER['HTTP_X_FORWARDED_PROTO']) || $_SERVER['HTTP_X_FORWARDED_PROTO'] !== 'https')) {
+                wp_redirect('https://' . $_SERVER['HTTP_HOST'] . $uri, 301);
+                exit;
+            }
+
             define('BW_GHOST_TARGET_LANG', $lang);
             $_SERVER['REQUEST_URI'] = substr($uri, 3); // Strip language code so WP loads English page
             break;
@@ -102,13 +111,6 @@ function bw_ghost_catch_virtual_url($do_parse, $wp) {
 add_action('template_redirect', 'bw_ghost_start_buffer', 0);
 function bw_ghost_start_buffer() {
     if (defined('BW_GHOST_TARGET_LANG')) {
-        
-        // FORCE HTTPS REDIRECT: Prevents unsecure warnings if accessed via HTTP
-        if (!is_ssl() && (!isset($_SERVER['HTTP_X_FORWARDED_PROTO']) || $_SERVER['HTTP_X_FORWARDED_PROTO'] !== 'https')) {
-            wp_redirect('https://' . $_SERVER['HTTP_HOST'] . $_SERVER['REQUEST_URI'], 301);
-            exit;
-        }
-
         remove_action('template_redirect', 'redirect_canonical');
         ob_start('bw_ghost_translate_html');
     }

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BW Empire Ghost Translator
  * Description: 100% Safe, 0 DB-Bloat translations using DeepL API and Static Disk Caching.
- * Version: 1.3.0
+ * Version: 1.4.1
  * Author: BW Empire
  */
 
@@ -147,19 +147,17 @@ function bw_ghost_translate_html($html) {
 
     $endpoint = strpos($api_key, ':fx') !== false ? 'https://api-free.deepl.com/v2/translate' : 'https://api.deepl.com/v2/translate';
 
-    // 🚀 NEW: STRICT JSON PAYLOAD
-    // This prevents special HTML characters from breaking the API request
+    // STRICT JSON PAYLOAD
     $body_json = wp_json_encode(array(
-        'text' => array($stripped_html), // DeepL expects JSON text to be an array
+        'text' => array($stripped_html),
         'target_lang' => strtoupper($target_lang),
         'tag_handling' => 'html', 
-        'ignore_tags' => array('bwph', 'code', 'pre') // DeepL expects JSON tags to be an array
+        'ignore_tags' => array('bwph', 'code', 'pre') 
     ));
 
-    // Hit the API
     $response = wp_remote_post($endpoint, array(
         'headers' => array(
-            'Authorization' => 'DeepL-Auth-Key ' . trim($api_key), // 🚀 NEW: Secure Auth Header
+            'Authorization' => 'DeepL-Auth-Key ' . trim($api_key), 
             'Content-Type'  => 'application/json'
         ),
         'body'    => $body_json,
@@ -170,10 +168,7 @@ function bw_ghost_translate_html($html) {
     if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
         status_header(503); 
         header('Retry-After: 600'); 
-        
-        // 🚀 ENHANCED DEBUGGING: Now prints the exact text of why DeepL rejected it
-        $error_msg = is_wp_error($response) ? $response->get_error_message() : 'HTTP Code: ' . wp_remote_retrieve_response_code($response) . ' - ' . wp_remote_retrieve_body($response);
-        return "<!-- BW GHOST ERROR: " . $error_msg . " -->\n" . $html; 
+        return $html; // Return English HTML silently
     }
 
     $data = json_decode(wp_remote_retrieve_body($response), true);
@@ -192,6 +187,55 @@ function bw_ghost_translate_html($html) {
 
         // Swap out the lang tag for SEO
         $translated_html = str_replace('<html lang="en-US">', '<html lang="' . strtolower($target_lang) . '">', $translated_html);
+
+        // 🚀 NEW: THE "TRANSLATION BUBBLE" (Internal Link Rewriter)
+        $host = $_SERVER['HTTP_HOST'];
+        $lang_prefix = '/' . strtolower($target_lang) . '/';
+
+        $translated_html = preg_replace_callback(
+            '/<a\s+([^>]*?)href=["\']([^"\']+)["\']([^>]*)>/is',
+            function($matches) use ($host, $lang_prefix) {
+                $before = $matches[1];
+                $url = $matches[2];
+                $after = $matches[3];
+
+                // Ignore anchors, emails, phone numbers, and affiliate links (/go/)
+                if (strpos($url, '#') === 0 || strpos($url, 'mailto:') === 0 || strpos($url, 'tel:') === 0 || strpos($url, '/go/') !== false || strpos($url, '/wp-content/') !== false) {
+                    return $matches[0];
+                }
+
+                $is_internal = false;
+                $new_url = $url;
+
+                // Check 1: Is it an Absolute Internal Link? (https://yoursite.com/about)
+                if (strpos($url, 'http://' . $host) === 0 || strpos($url, 'https://' . $host) === 0) {
+                    $is_internal = true;
+                    $host_pos = strpos($url, $host) + strlen($host);
+                    $path_and_query = substr($url, $host_pos);
+                    
+                    // Only inject if it doesn't already have the /fr/ prefix
+                    if (strpos($path_and_query, $lang_prefix) !== 0) {
+                        $new_url = substr($url, 0, $host_pos) . $lang_prefix . ltrim($path_and_query, '/');
+                    }
+                } 
+                // Check 2: Is it a Relative Internal Link? (/about)
+                elseif (strpos($url, '/') === 0 && strpos($url, '//') !== 0) {
+                    $is_internal = true;
+                    // Only inject if it doesn't already have the /fr/ prefix
+                    if (strpos($url, $lang_prefix) !== 0) {
+                        $new_url = $lang_prefix . ltrim($url, '/');
+                    }
+                }
+
+                // If internal, rewrite the HTML tag
+                if ($is_internal) {
+                    return '<a ' . $before . 'href="' . $new_url . '"' . $after . '>';
+                }
+
+                return $matches[0]; // External link, do not touch
+            },
+            $translated_html
+        );
 
         // Save to static disk so we NEVER pay for this translation again
         file_put_contents($cache_file, $translated_html);

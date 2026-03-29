@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: BW Empire Ghost Translator
- * Description: 100% Safe, 0 DB-Bloat translations using DeepL API and Static Disk Caching.
- * Version: 1.4.1
+ * Description: 100% Safe, 0 DB-Bloat translations using DeepL API, Static Disk Caching, and Translation Bubbles.
+ * Version: 1.4.4
  * Author: BW Empire
  */
 
@@ -103,15 +103,12 @@ add_action('template_redirect', 'bw_ghost_start_buffer', 0);
 function bw_ghost_start_buffer() {
     if (defined('BW_GHOST_TARGET_LANG')) {
         
-        // 🚀 NEW: FORCE HTTPS SECURE REDIRECT
-        // Because we are killing WP's native canonical redirect below, 
-        // we must manually force SSL so browsers don't throw an "Unsecure" warning.
+        // FORCE HTTPS REDIRECT: Prevents unsecure warnings if accessed via HTTP
         if (!is_ssl() && (!isset($_SERVER['HTTP_X_FORWARDED_PROTO']) || $_SERVER['HTTP_X_FORWARDED_PROTO'] !== 'https')) {
             wp_redirect('https://' . $_SERVER['HTTP_HOST'] . $_SERVER['REQUEST_URI'], 301);
             exit;
         }
 
-        // Prevent WordPress from throwing a 404 on virtual URLs
         remove_action('template_redirect', 'redirect_canonical');
         ob_start('bw_ghost_translate_html');
     }
@@ -188,7 +185,9 @@ function bw_ghost_translate_html($html) {
         // Swap out the lang tag for SEO
         $translated_html = str_replace('<html lang="en-US">', '<html lang="' . strtolower($target_lang) . '">', $translated_html);
 
-        // 🚀 NEW: THE "TRANSLATION BUBBLE" (Internal Link Rewriter)
+        // ==========================================
+        // 🚀 THE "TRANSLATION BUBBLE" (HTTPS FORCED)
+        // ==========================================
         $host = $_SERVER['HTTP_HOST'];
         $lang_prefix = '/' . strtolower($target_lang) . '/';
 
@@ -207,27 +206,28 @@ function bw_ghost_translate_html($html) {
                 $is_internal = false;
                 $new_url = $url;
 
-                // Check 1: Is it an Absolute Internal Link? (https://yoursite.com/about)
+                // Check 1: Is it an Absolute Internal Link? (Force HTTPS)
                 if (strpos($url, 'http://' . $host) === 0 || strpos($url, 'https://' . $host) === 0) {
                     $is_internal = true;
                     $host_pos = strpos($url, $host) + strlen($host);
                     $path_and_query = substr($url, $host_pos);
                     
-                    // Only inject if it doesn't already have the /fr/ prefix
                     if (strpos($path_and_query, $lang_prefix) !== 0) {
-                        $new_url = substr($url, 0, $host_pos) . $lang_prefix . ltrim($path_and_query, '/');
+                        $new_url = 'https://' . $host . $lang_prefix . ltrim($path_and_query, '/');
+                    } else {
+                        // Even if it has the prefix, force it to HTTPS just in case it was HTTP
+                        $new_url = 'https://' . $host . $path_and_query;
                     }
                 } 
                 // Check 2: Is it a Relative Internal Link? (/about)
                 elseif (strpos($url, '/') === 0 && strpos($url, '//') !== 0) {
                     $is_internal = true;
-                    // Only inject if it doesn't already have the /fr/ prefix
                     if (strpos($url, $lang_prefix) !== 0) {
                         $new_url = $lang_prefix . ltrim($url, '/');
                     }
                 }
 
-                // If internal, rewrite the HTML tag
+                // If internal, rewrite the HTML tag safely
                 if ($is_internal) {
                     return '<a ' . $before . 'href="' . $new_url . '"' . $after . '>';
                 }
@@ -256,7 +256,8 @@ function bw_ghost_hreflang_tags() {
 
     $langs = array_map('trim', explode(',', strtolower($langs_setting)));
     
-    $protocol = isset($_SERVER['HTTPS']) ? 'https://' : 'http://';
+    // 🚀 FORCE HTTPS for SEO Hreflang tags
+    $protocol = 'https://';
     $host = $_SERVER['HTTP_HOST'];
     $base_uri = defined('BW_GHOST_TARGET_LANG') ? substr($_SERVER['REQUEST_URI'], 3) : $_SERVER['REQUEST_URI'];
     $base_url = $protocol . $host . $base_uri;

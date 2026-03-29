@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BW Empire Ghost Translator
  * Description: 100% Safe, 0 DB-Bloat translations using DeepL API and Static Disk Caching.
- * Version: 1.1.1
+ * Version: 1.2.0
  * Author: BW Empire
  */
 
@@ -123,27 +123,40 @@ function bw_ghost_translate_html($html) {
         return file_get_contents($cache_file);
     }
 
+    // 🚀 NEW: THE PAYLOAD STRIPPER (Bypasses DeepL 128KB Limit)
+    // Temporarily extract all heavy CSS, Scripts, and SVG icons.
+    $placeholders = array();
+    $stripped_html = preg_replace_callback(
+        '/<(style|script|svg)[^>]*>.*?<\/\1>/is',
+        function($matches) use (&$placeholders) {
+            $index = count($placeholders);
+            $placeholders[$index] = $matches[0];
+            return '<bwph id="' . $index . '"></bwph>';
+        },
+        $html
+    );
+
     $endpoint = strpos($api_key, ':fx') !== false ? 'https://api-free.deepl.com/v2/translate' : 'https://api.deepl.com/v2/translate';
 
     $body = array(
         'auth_key' => $api_key,
-        'text' => $html,
+        'text' => $stripped_html, // Send the skinny version!
         'target_lang' => $target_lang,
         'tag_handling' => 'html', 
-        'ignore_tags' => 'script,style,code,pre' // Protects Oxygen Builder code
+        'ignore_tags' => 'bwph,code,pre' // Tell DeepL to ignore our placeholders and code blocks
     );
 
     $response = wp_remote_post($endpoint, array(
         'body' => $body,
-        'timeout' => 30 
+        'timeout' => 30 // Give it 30 seconds just to be safe
     ));
 
-    // 🚀 ULTIMATE SEO FAIL-SAFE: 503 ERROR ON TIMEOUT
+    // 🚀 ULTIMATE SEO FAIL-SAFE: 503 ERROR ON TIMEOUT OR 413 LIMIT
     if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
         status_header(503); 
         header('Retry-After: 600'); 
         
-        // 🐞 DEBUG MODE: This prints the exact error invisibly at the very top of your HTML code!
+        // Debug mode so you can see if anything else fails
         $error_msg = is_wp_error($response) ? $response->get_error_message() : 'HTTP Code: ' . wp_remote_retrieve_response_code($response);
         return "<!-- BW GHOST ERROR: " . $error_msg . " -->\n" . $html; 
     }
@@ -152,6 +165,17 @@ function bw_ghost_translate_html($html) {
     if (!empty($data['translations'][0]['text'])) {
         $translated_html = $data['translations'][0]['text'];
         
+        // 🚀 NEW: RE-INJECT THE FAT
+        // Put the heavy CSS and SVG icons back exactly where they belong
+        $translated_html = preg_replace_callback(
+            '/<bwph id="(\d+)".*?<\/bwph>/is',
+            function($matches) use ($placeholders) {
+                $index = intval($matches[1]);
+                return isset($placeholders[$index]) ? $placeholders[$index] : $matches[0];
+            },
+            $translated_html
+        );
+
         // Swap out the lang tag for SEO
         $translated_html = str_replace('<html lang="en-US">', '<html lang="' . strtolower($target_lang) . '">', $translated_html);
 

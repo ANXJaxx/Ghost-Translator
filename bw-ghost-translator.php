@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BW Empire Ghost Translator
  * Description: 100% Safe, 0 DB-Bloat translations using DeepL API and Static Disk Caching.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Author: BW Empire
  */
 
@@ -135,14 +135,17 @@ function bw_ghost_translate_html($html) {
 
     $response = wp_remote_post($endpoint, array(
         'body' => $body,
-        'timeout' => 8 
+        'timeout' => 30 
     ));
 
     // 🚀 ULTIMATE SEO FAIL-SAFE: 503 ERROR ON TIMEOUT
     if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
         status_header(503); 
-        header('Retry-After: 600'); // Tells Googlebot to try again in 10 minutes
-        return $html; // Show English safely to human visitors
+        header('Retry-After: 600'); 
+        
+        // 🐞 DEBUG MODE: This prints the exact error invisibly at the very top of your HTML code!
+        $error_msg = is_wp_error($response) ? $response->get_error_message() : 'HTTP Code: ' . wp_remote_retrieve_response_code($response);
+        return "<!-- BW GHOST ERROR: " . $error_msg . " -->\n" . $html; 
     }
 
     $data = json_decode(wp_remote_retrieve_body($response), true);

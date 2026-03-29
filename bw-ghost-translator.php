@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BW Empire Ghost Translator
  * Description: 100% Safe, 0 DB-Bloat translations using DeepL API and Static Disk Caching.
- * Version: 1.2.0
+ * Version: 1.3.0
  * Author: BW Empire
  */
 
@@ -102,6 +102,16 @@ function bw_ghost_catch_virtual_url($do_parse, $wp) {
 add_action('template_redirect', 'bw_ghost_start_buffer', 0);
 function bw_ghost_start_buffer() {
     if (defined('BW_GHOST_TARGET_LANG')) {
+        
+        // 🚀 NEW: FORCE HTTPS SECURE REDIRECT
+        // Because we are killing WP's native canonical redirect below, 
+        // we must manually force SSL so browsers don't throw an "Unsecure" warning.
+        if (!is_ssl() && (!isset($_SERVER['HTTP_X_FORWARDED_PROTO']) || $_SERVER['HTTP_X_FORWARDED_PROTO'] !== 'https')) {
+            wp_redirect('https://' . $_SERVER['HTTP_HOST'] . $_SERVER['REQUEST_URI'], 301);
+            exit;
+        }
+
+        // Prevent WordPress from throwing a 404 on virtual URLs
         remove_action('template_redirect', 'redirect_canonical');
         ob_start('bw_ghost_translate_html');
     }
@@ -123,8 +133,7 @@ function bw_ghost_translate_html($html) {
         return file_get_contents($cache_file);
     }
 
-    // 🚀 NEW: THE PAYLOAD STRIPPER (Bypasses DeepL 128KB Limit)
-    // Temporarily extract all heavy CSS, Scripts, and SVG icons.
+    // THE PAYLOAD STRIPPER (Bypasses DeepL 128KB Limit)
     $placeholders = array();
     $stripped_html = preg_replace_callback(
         '/<(style|script|svg)[^>]*>.*?<\/\1>/is',
@@ -138,26 +147,32 @@ function bw_ghost_translate_html($html) {
 
     $endpoint = strpos($api_key, ':fx') !== false ? 'https://api-free.deepl.com/v2/translate' : 'https://api.deepl.com/v2/translate';
 
-    $body = array(
-        'auth_key' => $api_key,
-        'text' => $stripped_html, // Send the skinny version!
-        'target_lang' => $target_lang,
+    // 🚀 NEW: STRICT JSON PAYLOAD
+    // This prevents special HTML characters from breaking the API request
+    $body_json = wp_json_encode(array(
+        'text' => array($stripped_html), // DeepL expects JSON text to be an array
+        'target_lang' => strtoupper($target_lang),
         'tag_handling' => 'html', 
-        'ignore_tags' => 'bwph,code,pre' // Tell DeepL to ignore our placeholders and code blocks
-    );
-
-    $response = wp_remote_post($endpoint, array(
-        'body' => $body,
-        'timeout' => 30 // Give it 30 seconds just to be safe
+        'ignore_tags' => array('bwph', 'code', 'pre') // DeepL expects JSON tags to be an array
     ));
 
-    // 🚀 ULTIMATE SEO FAIL-SAFE: 503 ERROR ON TIMEOUT OR 413 LIMIT
+    // Hit the API
+    $response = wp_remote_post($endpoint, array(
+        'headers' => array(
+            'Authorization' => 'DeepL-Auth-Key ' . trim($api_key), // 🚀 NEW: Secure Auth Header
+            'Content-Type'  => 'application/json'
+        ),
+        'body'    => $body_json,
+        'timeout' => 30 
+    ));
+
+    // ULTIMATE SEO FAIL-SAFE: 503 ERROR
     if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
         status_header(503); 
         header('Retry-After: 600'); 
         
-        // Debug mode so you can see if anything else fails
-        $error_msg = is_wp_error($response) ? $response->get_error_message() : 'HTTP Code: ' . wp_remote_retrieve_response_code($response);
+        // 🚀 ENHANCED DEBUGGING: Now prints the exact text of why DeepL rejected it
+        $error_msg = is_wp_error($response) ? $response->get_error_message() : 'HTTP Code: ' . wp_remote_retrieve_response_code($response) . ' - ' . wp_remote_retrieve_body($response);
         return "<!-- BW GHOST ERROR: " . $error_msg . " -->\n" . $html; 
     }
 
@@ -165,8 +180,7 @@ function bw_ghost_translate_html($html) {
     if (!empty($data['translations'][0]['text'])) {
         $translated_html = $data['translations'][0]['text'];
         
-        // 🚀 NEW: RE-INJECT THE FAT
-        // Put the heavy CSS and SVG icons back exactly where they belong
+        // RE-INJECT THE FAT
         $translated_html = preg_replace_callback(
             '/<bwph id="(\d+)".*?<\/bwph>/is',
             function($matches) use ($placeholders) {

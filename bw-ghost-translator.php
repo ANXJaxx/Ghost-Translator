@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: BW Empire Ghost Translator
- * Description: 100% Safe, 0 DB-Bloat translations using DeepL API, Static Disk Caching, and Translation Bubbles.
- * Version: 1.4.7
+ * Description: 100% Safe translations using DeepL API, Database Storage (Post Meta), and Rank Math Sitemap Integration.
+ * Version: 2.0.0
  * Author: BW Empire
  */
 
@@ -22,7 +22,7 @@ $myUpdateChecker = PucFactory::buildUpdateChecker(
 $myUpdateChecker->setBranch('main');
 
 // ==========================================
-// 1. SETTINGS PAGE
+// 1. SETTINGS PAGE & DB CLEANUP
 // ==========================================
 add_action('admin_menu', 'bw_ghost_translator_menu');
 function bw_ghost_translator_menu() {
@@ -38,8 +38,8 @@ function bw_ghost_register_settings() {
 function bw_ghost_settings_page() {
     ?>
     <div class="wrap">
-        <h2>👻 BW Empire Ghost Translator</h2>
-        <p>100% database-free translations. Creates virtual URLs (e.g. <code>/es/</code>) and caches translated HTML to disk.</p>
+        <h2>👻 BW Empire Ghost Translator (v2.0)</h2>
+        <p>Translations are now securely saved in the WordPress Database (Post Meta) and injected into the Rank Math Sitemap.</p>
         <form method="post" action="options.php">
             <?php settings_fields('bw_ghost_group'); ?>
             <table class="form-table">
@@ -52,29 +52,37 @@ function bw_ghost_settings_page() {
                     <td><input type="text" name="bw_ghost_languages" value="<?php echo esc_attr(get_option('bw_ghost_languages', 'ES,FR,DE')); ?>" style="width:400px;" /><br><small>Use standard 2-letter codes. E.g., ES for Spanish.</small></td>
                 </tr>
             </table>
-            <?php submit_button('Save Settings & Clear Cache'); ?>
+            <?php submit_button('Save Settings & Clear Database Cache'); ?>
         </form>
     </div>
     <?php
+    // 🚀 NEW: Securely wipe the translated database rows if settings are saved
     if (isset($_GET['settings-updated'])) {
-        $cache_dir = WP_CONTENT_DIR . '/bw-translations/';
-        bw_ghost_delete_dir($cache_dir);
+        global $wpdb;
+        $wpdb->query("DELETE FROM {$wpdb->postmeta} WHERE meta_key LIKE '_bw_trans_html_%'");
+        $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE '_bw_trans_opt_%'");
     }
 }
 
-function bw_ghost_delete_dir($dirPath) {
-    if (!is_dir($dirPath)) return;
-    $files = glob($dirPath . '*', GLOB_MARK);
-    foreach ($files as $file) {
-        if (is_dir($file)) bw_ghost_delete_dir($file);
-        else unlink($file);
-    }
-    rmdir($dirPath);
-}
+// ==========================================
+// 2. THE VIRTUAL URL ROUTER
+// ==========================================
+add_action('plugins_loaded', 'bw_ghost_force_ssl_early', 1);
+function bw_ghost_force_ssl_early() {
+    if (!is_ssl() && (!isset($_SERVER['HTTP_X_FORWARDED_PROTO']) || $_SERVER['HTTP_X_FORWARDED_PROTO'] !== 'https')) {
+        $uri = $_SERVER['REQUEST_URI'];
+        $langs_setting = get_option('bw_ghost_languages', '');
+        if (empty($langs_setting)) return;
 
-// ==========================================
-// 2. THE 100% SAFE VIRTUAL URL ROUTER
-// ==========================================
+        $langs = array_map('trim', explode(',', strtoupper($langs_setting)));
+        foreach ($langs as $lang) {
+            if (strpos($uri, '/' . strtolower($lang) . '/') === 0) {
+                header("Location: https://" . $_SERVER['HTTP_HOST'] . $uri, true, 301);
+                exit;
+            }
+        }
+    }
+}
 
 add_filter('do_parse_request', 'bw_ghost_catch_virtual_url', 1, 2);
 function bw_ghost_catch_virtual_url($do_parse, $wp) {
@@ -90,7 +98,7 @@ function bw_ghost_catch_virtual_url($do_parse, $wp) {
         $prefix = '/' . strtolower($lang) . '/';
         if (strpos($uri, $prefix) === 0) {
             define('BW_GHOST_TARGET_LANG', $lang);
-            $_SERVER['REQUEST_URI'] = substr($uri, 3); // Strip language code so WP loads English page
+            $_SERVER['REQUEST_URI'] = substr($uri, 3); 
             break;
         }
     }
@@ -98,15 +106,12 @@ function bw_ghost_catch_virtual_url($do_parse, $wp) {
 }
 
 // ==========================================
-// 3. OUTPUT BUFFER INTERCEPTOR & DEEPL API
+// 3. OUTPUT BUFFER & DEEPL API (DATABASE STORAGE)
 // ==========================================
 add_action('template_redirect', 'bw_ghost_start_buffer', 0);
 function bw_ghost_start_buffer() {
     if (defined('BW_GHOST_TARGET_LANG')) {
-        // Prevent WordPress from throwing a 404 on virtual URLs
         remove_action('template_redirect', 'redirect_canonical');
-        
-        // Start collecting the HTML before it goes to the user's browser
         ob_start('bw_ghost_translate_html');
     }
 }
@@ -115,19 +120,23 @@ function bw_ghost_translate_html($html) {
     $api_key = get_option('bw_ghost_deepl_key');
     if (empty($api_key) || empty($html)) return $html;
 
-    $target_lang = BW_GHOST_TARGET_LANG;
-    $cache_dir = WP_CONTENT_DIR . '/bw-translations/' . strtolower($target_lang) . '/';
-    if (!file_exists($cache_dir)) wp_mkdir_p($cache_dir);
-    
-    $url_hash = md5($_SERVER['HTTP_HOST'] . $_SERVER['REQUEST_URI']);
-    $cache_file = $cache_dir . $url_hash . '.html';
+    $target_lang = strtolower(BW_GHOST_TARGET_LANG);
+    $is_single = is_singular();
+    $obj_id = get_queried_object_id();
+    $opt_key = '_bw_trans_opt_' . $target_lang . '_' . md5($_SERVER['REQUEST_URI']);
 
-    // Serve 0ms static file if we already translated it
-    if (file_exists($cache_file)) {
-        return file_get_contents($cache_file);
+    // 🚀 NEW: Check Database instead of File System
+    if ($is_single && $obj_id) {
+        $cached_html = get_post_meta($obj_id, '_bw_trans_html_' . $target_lang, true);
+    } else {
+        $cached_html = get_option($opt_key);
     }
 
-    // THE PAYLOAD STRIPPER (Bypasses DeepL 128KB Limit)
+    if (!empty($cached_html)) {
+        return $cached_html; // Serve instantly from Database!
+    }
+
+    // THE PAYLOAD STRIPPER
     $placeholders = array();
     $stripped_html = preg_replace_callback(
         '/<(style|script|svg)[^>]*>.*?<\/\1>/is',
@@ -141,7 +150,6 @@ function bw_ghost_translate_html($html) {
 
     $endpoint = strpos($api_key, ':fx') !== false ? 'https://api-free.deepl.com/v2/translate' : 'https://api.deepl.com/v2/translate';
 
-    // STRICT JSON PAYLOAD
     $body_json = wp_json_encode(array(
         'text' => array($stripped_html),
         'target_lang' => strtoupper($target_lang),
@@ -158,11 +166,10 @@ function bw_ghost_translate_html($html) {
         'timeout' => 30 
     ));
 
-    // ULTIMATE SEO FAIL-SAFE: 503 ERROR
     if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
         status_header(503); 
         header('Retry-After: 600'); 
-        return $html; // Return English HTML silently
+        return $html; 
     }
 
     $data = json_decode(wp_remote_retrieve_body($response), true);
@@ -179,14 +186,11 @@ function bw_ghost_translate_html($html) {
             $translated_html
         );
 
-        // Swap out the lang tag for SEO
-        $translated_html = str_replace('<html lang="en-US">', '<html lang="' . strtolower($target_lang) . '">', $translated_html);
+        $translated_html = str_replace('<html lang="en-US">', '<html lang="' . $target_lang . '">', $translated_html);
 
-        // ==========================================
-        // 🚀 THE "TRANSLATION BUBBLE" (HTTPS FORCED)
-        // ==========================================
+        // THE "TRANSLATION BUBBLE"
         $host = $_SERVER['HTTP_HOST'];
-        $lang_prefix = '/' . strtolower($target_lang) . '/';
+        $lang_prefix = '/' . $target_lang . '/';
 
         $translated_html = preg_replace_callback(
             '/<a\s+([^>]*?)href=["\']([^"\']+)["\']([^>]*)>/is',
@@ -195,7 +199,6 @@ function bw_ghost_translate_html($html) {
                 $url = $matches[2];
                 $after = $matches[3];
 
-                // Ignore anchors, emails, phone numbers, and affiliate links (/go/)
                 if (strpos($url, '#') === 0 || strpos($url, 'mailto:') === 0 || strpos($url, 'tel:') === 0 || strpos($url, '/go/') !== false || strpos($url, '/wp-content/') !== false) {
                     return $matches[0];
                 }
@@ -203,7 +206,6 @@ function bw_ghost_translate_html($html) {
                 $is_internal = false;
                 $new_url = $url;
 
-                // Check 1: Is it an Absolute Internal Link? (Force HTTPS)
                 if (strpos($url, 'http://' . $host) === 0 || strpos($url, 'https://' . $host) === 0) {
                     $is_internal = true;
                     $host_pos = strpos($url, $host) + strlen($host);
@@ -212,30 +214,30 @@ function bw_ghost_translate_html($html) {
                     if (strpos($path_and_query, $lang_prefix) !== 0) {
                         $new_url = 'https://' . $host . $lang_prefix . ltrim($path_and_query, '/');
                     } else {
-                        // Even if it has the prefix, force it to HTTPS just in case it was HTTP
                         $new_url = 'https://' . $host . $path_and_query;
                     }
-                } 
-                // Check 2: Is it a Relative Internal Link? (/about)
-                elseif (strpos($url, '/') === 0 && strpos($url, '//') !== 0) {
+                } elseif (strpos($url, '/') === 0 && strpos($url, '//') !== 0) {
                     $is_internal = true;
                     if (strpos($url, $lang_prefix) !== 0) {
                         $new_url = $lang_prefix . ltrim($url, '/');
                     }
                 }
 
-                // If internal, rewrite the HTML tag safely
                 if ($is_internal) {
                     return '<a ' . $before . 'href="' . $new_url . '"' . $after . '>';
                 }
 
-                return $matches[0]; // External link, do not touch
+                return $matches[0]; 
             },
             $translated_html
         );
 
-        // Save to static disk so we NEVER pay for this translation again
-        file_put_contents($cache_file, $translated_html);
+        // 🚀 NEW: SAVE TO DATABASE PERMANENTLY
+        if ($is_single && $obj_id) {
+            update_post_meta($obj_id, '_bw_trans_html_' . $target_lang, $translated_html);
+        } else {
+            update_option($opt_key, $translated_html, false); // autoload = false to prevent bloat
+        }
 
         return $translated_html;
     }
@@ -253,7 +255,6 @@ function bw_ghost_hreflang_tags() {
 
     $langs = array_map('trim', explode(',', strtolower($langs_setting)));
     
-    // 🚀 FORCE HTTPS for SEO Hreflang tags
     $protocol = 'https://';
     $host = $_SERVER['HTTP_HOST'];
     $base_uri = defined('BW_GHOST_TARGET_LANG') ? substr($_SERVER['REQUEST_URI'], 3) : $_SERVER['REQUEST_URI'];
@@ -266,4 +267,46 @@ function bw_ghost_hreflang_tags() {
         $foreign_url = $protocol . $host . '/' . $lang . $base_uri;
         echo '<link rel="alternate" hreflang="' . esc_attr($lang) . '" href="' . esc_url($foreign_url) . '" />' . "\n";
     }
+}
+
+// ==========================================
+// 5. RANK MATH SITEMAP INJECTION
+// ==========================================
+// 🚀 NEW: Injects all foreign URLs directly into Rank Math's XML Sitemap automatically
+$target_post_types =['post', 'page', 'seo_tool', 'glossary'];
+
+foreach ($target_post_types as $pt) {
+    add_filter("rank_math/sitemap/{$pt}_content", 'bw_ghost_inject_sitemap_urls', 10, 2);
+}
+
+function bw_ghost_inject_sitemap_urls($urls) {
+    $langs_setting = get_option('bw_ghost_languages', '');
+    if (empty($langs_setting)) return $urls;
+
+    $langs = array_map('trim', explode(',', strtolower($langs_setting)));
+    $new_urls =[];
+
+    foreach ($urls as $url_data) {
+        // Keep the original English URL
+        $new_urls[] = $url_data;
+
+        // Generate the translated Ghost URLs for the Sitemap
+        if (!empty($url_data['loc'])) {
+            foreach ($langs as $lang) {
+                $ghost_url_data = $url_data;
+                $original_loc = $url_data['loc'];
+                
+                $parsed = parse_url($original_loc);
+                if (isset($parsed['host'])) {
+                    $host_pos = strpos($original_loc, $parsed['host']) + strlen($parsed['host']);
+                    $ghost_loc = substr($original_loc, 0, $host_pos) . '/' . $lang . substr($original_loc, $host_pos);
+                    
+                    $ghost_url_data['loc'] = $ghost_loc;
+                    $new_urls[] = $ghost_url_data;
+                }
+            }
+        }
+    }
+
+    return $new_urls;
 }

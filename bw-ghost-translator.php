@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BW Empire Ghost Translator
  * Description: 100% Safe translations using DeepL API, Database Storage (Post Meta), and Rank Math Sitemap Integration.
- * Version: 2.1.0
+ * Version: 2.2.0
  * Author: BW Empire
  */
 
@@ -270,43 +270,79 @@ function bw_ghost_hreflang_tags() {
 }
 
 // ==========================================
-// 5. RANK MATH SITEMAP INJECTION (THE XML FIX)
+// 5. RANK MATH SITEMAP INJECTION (NATIVE ARRAY FIX)
 // ==========================================
-// 🚀 NEW: Intercepts the raw XML string and clones the nodes dynamically
+// Hooks into Rank Math to dynamically add our Ghost URLs to the XML Sitemap
+add_filter('rank_math/sitemap/url', 'bw_ghost_inject_sitemap_urls', 10, 2);
+
+function bw_ghost_inject_sitemap_urls($url, $object) {
+    // Only target specific post types (we don't want to translate attachments or raw categories)
+    $target_post_types = ['post', 'page', 'seo_tool', 'glossary'];
+    
+    // Check if the object is a post and its type is in our target list
+    if (!isset($object->post_type) || !in_array($object->post_type, $target_post_types)) {
+        return $url;
+    }
+
+    $langs_setting = get_option('bw_ghost_languages', '');
+    if (empty($langs_setting) || empty($url['loc'])) {
+        return $url;
+    }
+
+    $langs = array_map('trim', explode(',', strtolower($langs_setting)));
+    
+    // Instead of returning just the original URL array, we have to hack Rank Math slightly.
+    // The `rank_math/sitemap/url` filter only expects ONE array (one URL) to be returned.
+    // To add MULTIPLE URLs, we have to hook into the generator itself.
+    
+    // The safest way is actually to use `rank_math/sitemap/{$type}_content` but parse the XML properly.
+    // Let's go back to the previous method but fix the regex so it catches Rank Math's specific formatting.
+    return $url; 
+}
+
+// 🚀 REVISED XML INJECTION (Fixing the Regex matching)
 $target_post_types = ['post', 'page', 'seo_tool', 'glossary'];
 
 foreach ($target_post_types as $pt) {
-    add_filter("rank_math/sitemap/{$pt}_content", 'bw_ghost_inject_sitemap_urls', 10, 1);
+    add_filter("rank_math/sitemap/{$pt}_content", 'bw_ghost_inject_sitemap_urls_xml', 99, 1);
 }
 
-function bw_ghost_inject_sitemap_urls($xml_content) {
+function bw_ghost_inject_sitemap_urls_xml($xml_content) {
     $langs_setting = get_option('bw_ghost_languages', '');
     if (empty($langs_setting) || empty($xml_content)) return $xml_content;
 
     $langs = array_map('trim', explode(',', strtolower($langs_setting)));
 
-    // Scan the raw XML string for every <url> block and its <loc> URL
-    $xml_content = preg_replace_callback('/<url>\s*<loc>([^<]+)<\/loc>.*?<\/url>/is', function($matches) use ($langs) {
-        $original_block = $matches[0];
-        $original_url = $matches[1];
-        $injected_blocks = '';
+    // 🚀 NEW REGEX: Much more forgiving. It matches <url> ... </url> even if there are newlines or weird spaces.
+    // It captures the entire block, the <loc> tag specifically, and the URL inside it.
+    $xml_content = preg_replace_callback(
+        '/<url>(.*?)<loc>([^<]+)<\/loc>(.*?)<\/url>/is', 
+        function($matches) use ($langs) {
+            $original_block = $matches[0];
+            $before_loc = $matches[1];
+            $original_url = $matches[2];
+            $after_loc = $matches[3];
+            
+            $injected_blocks = '';
 
-        $parsed = parse_url($original_url);
-        if (isset($parsed['host'])) {
-            foreach ($langs as $lang) {
-                $host_pos = strpos($original_url, $parsed['host']) + strlen($parsed['host']);
-                // Inject the language code (e.g. /fr/) right after the domain
-                $ghost_url = substr($original_url, 0, $host_pos) . '/' . $lang . substr($original_url, $host_pos);
-                
-                // Clone the XML block and replace ONLY the URL (keeps images & lastmod intact!)
-                $new_block = str_replace('<loc>' . $original_url . '</loc>', '<loc>' . $ghost_url . '</loc>', $original_block);
-                $injected_blocks .= "\n" . $new_block;
+            $parsed = parse_url($original_url);
+            if (isset($parsed['host'])) {
+                foreach ($langs as $lang) {
+                    $host_pos = strpos($original_url, $parsed['host']) + strlen($parsed['host']);
+                    // Inject the language code (e.g. /fr/)
+                    $ghost_url = substr($original_url, 0, $host_pos) . '/' . $lang . substr($original_url, $host_pos);
+                    
+                    // Rebuild the new block exactly like the old one, but with the new URL
+                    $new_block = '<url>' . $before_loc . '<loc>' . $ghost_url . '</loc>' . $after_loc . '</url>';
+                    $injected_blocks .= "\n" . $new_block;
+                }
             }
-        }
 
-        // Return the original block + the new translated blocks appended right below it
-        return $original_block . $injected_blocks;
-    }, $xml_content);
+            // Return the original + the translated versions
+            return $original_block . $injected_blocks;
+        }, 
+        $xml_content
+    );
 
     return $xml_content;
 }

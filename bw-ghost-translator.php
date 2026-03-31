@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BW Empire Ghost Translator
  * Description: 100% Safe translations using DeepL API, Database Storage (Post Meta), and Rank Math Sitemap Integration.
- * Version: 2.4.0
+ * Version: 2.5.0
  * Author: BW Empire
  */
 
@@ -287,22 +287,13 @@ function bw_add_intl_sitemap_to_index($xml) {
     return $xml;
 }
 
-// 2. Register the professional URL route for /translations-sitemap.xml
-add_action('init', 'bw_intl_sitemap_rewrite_rule');
-function bw_intl_sitemap_rewrite_rule() {
-    add_rewrite_rule('translations-sitemap\.xml$', 'index.php?bw_intl_sitemap=1', 'top');
-}
-
-add_filter('query_vars', 'bw_intl_sitemap_query_vars');
-function bw_intl_sitemap_query_vars($vars) {
-    $vars[] = 'bw_intl_sitemap';
-    return $vars;
-}
-
-// 3. Generate the actual XML output instantly
-add_action('template_redirect', 'bw_render_intl_sitemap');
+// 2. Direct URL Interception (Bypasses Rank Math 404 Handlers)
+add_action('template_redirect', 'bw_render_intl_sitemap', 1);
 function bw_render_intl_sitemap() {
-    if (get_query_var('bw_intl_sitemap')) {
+    $uri = $_SERVER['REQUEST_URI'];
+    
+    // Check if the URL exactly matches our sitemap file
+    if (strpos($uri, '/translations-sitemap.xml') !== false) {
         $langs_setting = get_option('bw_ghost_languages', '');
         if (empty($langs_setting)) {
             status_header(404);
@@ -355,7 +346,7 @@ function bw_render_intl_sitemap() {
         }
 
         echo '</urlset>';
-        exit;
+        exit; // Instantly kill WordPress so Rank Math can't redirect it to the homepage!
     }
 }
 

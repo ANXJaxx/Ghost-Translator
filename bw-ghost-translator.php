@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BW Empire Ghost Translator
  * Description: 100% Safe translations using DeepL API, Database Storage (Post Meta), and Rank Math Sitemap Integration.
- * Version: 2.0.0
+ * Version: 2.1.0
  * Author: BW Empire
  */
 
@@ -270,43 +270,43 @@ function bw_ghost_hreflang_tags() {
 }
 
 // ==========================================
-// 5. RANK MATH SITEMAP INJECTION
+// 5. RANK MATH SITEMAP INJECTION (THE XML FIX)
 // ==========================================
-// 🚀 NEW: Injects all foreign URLs directly into Rank Math's XML Sitemap automatically
-$target_post_types =['post', 'page', 'seo_tool', 'glossary'];
+// 🚀 NEW: Intercepts the raw XML string and clones the nodes dynamically
+$target_post_types = ['post', 'page', 'seo_tool', 'glossary'];
 
 foreach ($target_post_types as $pt) {
-    add_filter("rank_math/sitemap/{$pt}_content", 'bw_ghost_inject_sitemap_urls', 10, 2);
+    add_filter("rank_math/sitemap/{$pt}_content", 'bw_ghost_inject_sitemap_urls', 10, 1);
 }
 
-function bw_ghost_inject_sitemap_urls($urls) {
+function bw_ghost_inject_sitemap_urls($xml_content) {
     $langs_setting = get_option('bw_ghost_languages', '');
-    if (empty($langs_setting)) return $urls;
+    if (empty($langs_setting) || empty($xml_content)) return $xml_content;
 
     $langs = array_map('trim', explode(',', strtolower($langs_setting)));
-    $new_urls =[];
 
-    foreach ($urls as $url_data) {
-        // Keep the original English URL
-        $new_urls[] = $url_data;
+    // Scan the raw XML string for every <url> block and its <loc> URL
+    $xml_content = preg_replace_callback('/<url>\s*<loc>([^<]+)<\/loc>.*?<\/url>/is', function($matches) use ($langs) {
+        $original_block = $matches[0];
+        $original_url = $matches[1];
+        $injected_blocks = '';
 
-        // Generate the translated Ghost URLs for the Sitemap
-        if (!empty($url_data['loc'])) {
+        $parsed = parse_url($original_url);
+        if (isset($parsed['host'])) {
             foreach ($langs as $lang) {
-                $ghost_url_data = $url_data;
-                $original_loc = $url_data['loc'];
+                $host_pos = strpos($original_url, $parsed['host']) + strlen($parsed['host']);
+                // Inject the language code (e.g. /fr/) right after the domain
+                $ghost_url = substr($original_url, 0, $host_pos) . '/' . $lang . substr($original_url, $host_pos);
                 
-                $parsed = parse_url($original_loc);
-                if (isset($parsed['host'])) {
-                    $host_pos = strpos($original_loc, $parsed['host']) + strlen($parsed['host']);
-                    $ghost_loc = substr($original_loc, 0, $host_pos) . '/' . $lang . substr($original_loc, $host_pos);
-                    
-                    $ghost_url_data['loc'] = $ghost_loc;
-                    $new_urls[] = $ghost_url_data;
-                }
+                // Clone the XML block and replace ONLY the URL (keeps images & lastmod intact!)
+                $new_block = str_replace('<loc>' . $original_url . '</loc>', '<loc>' . $ghost_url . '</loc>', $original_block);
+                $injected_blocks .= "\n" . $new_block;
             }
         }
-    }
 
-    return $new_urls;
+        // Return the original block + the new translated blocks appended right below it
+        return $original_block . $injected_blocks;
+    }, $xml_content);
+
+    return $xml_content;
 }

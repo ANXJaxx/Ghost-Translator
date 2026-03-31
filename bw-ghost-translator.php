@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BW Empire Ghost Translator
  * Description: 100% Safe translations using DeepL API, Database Storage (Post Meta), and Rank Math Sitemap Integration.
- * Version: 2.2.0
+ * Version: 2.3.0
  * Author: BW Empire
  */
 
@@ -270,79 +270,62 @@ function bw_ghost_hreflang_tags() {
 }
 
 // ==========================================
-// 5. RANK MATH SITEMAP INJECTION (NATIVE ARRAY FIX)
+// 5. RANK MATH SITEMAP INJECTION (THE BULLETPROOF FIX)
 // ==========================================
-// Hooks into Rank Math to dynamically add our Ghost URLs to the XML Sitemap
-add_filter('rank_math/sitemap/url', 'bw_ghost_inject_sitemap_urls', 10, 2);
-
-function bw_ghost_inject_sitemap_urls($url, $object) {
-    // Only target specific post types (we don't want to translate attachments or raw categories)
-    $target_post_types = ['post', 'page', 'seo_tool', 'glossary'];
-    
-    // Check if the object is a post and its type is in our target list
-    if (!isset($object->post_type) || !in_array($object->post_type, $target_post_types)) {
-        return $url;
-    }
-
-    $langs_setting = get_option('bw_ghost_languages', '');
-    if (empty($langs_setting) || empty($url['loc'])) {
-        return $url;
-    }
-
-    $langs = array_map('trim', explode(',', strtolower($langs_setting)));
-    
-    // Instead of returning just the original URL array, we have to hack Rank Math slightly.
-    // The `rank_math/sitemap/url` filter only expects ONE array (one URL) to be returned.
-    // To add MULTIPLE URLs, we have to hook into the generator itself.
-    
-    // The safest way is actually to use `rank_math/sitemap/{$type}_content` but parse the XML properly.
-    // Let's go back to the previous method but fix the regex so it catches Rank Math's specific formatting.
-    return $url; 
-}
-
-// 🚀 REVISED XML INJECTION (Fixing the Regex matching)
-$target_post_types = ['post', 'page', 'seo_tool', 'glossary'];
+$target_post_types =['post', 'page', 'seo_tool', 'glossary'];
 
 foreach ($target_post_types as $pt) {
-    add_filter("rank_math/sitemap/{$pt}_content", 'bw_ghost_inject_sitemap_urls_xml', 99, 1);
+    add_filter("rank_math/sitemap/{$pt}_content", 'bw_ghost_inject_sitemap_urls_simple', 99, 1);
 }
 
-function bw_ghost_inject_sitemap_urls_xml($xml_content) {
+function bw_ghost_inject_sitemap_urls_simple($xml_content) {
     $langs_setting = get_option('bw_ghost_languages', '');
     if (empty($langs_setting) || empty($xml_content)) return $xml_content;
 
     $langs = array_map('trim', explode(',', strtolower($langs_setting)));
 
-    // 🚀 NEW REGEX: Much more forgiving. It matches <url> ... </url> even if there are newlines or weird spaces.
-    // It captures the entire block, the <loc> tag specifically, and the URL inside it.
-    $xml_content = preg_replace_callback(
-        '/<url>(.*?)<loc>([^<]+)<\/loc>(.*?)<\/url>/is', 
-        function($matches) use ($langs) {
-            $original_block = $matches[0];
-            $before_loc = $matches[1];
-            $original_url = $matches[2];
-            $after_loc = $matches[3];
-            
-            $injected_blocks = '';
+    // 1. Break the sitemap into individual <url> blocks
+    $url_blocks = explode('</url>', $xml_content);
+    $final_xml = '';
 
+    foreach ($url_blocks as $block) {
+        // Skip empty blocks
+        if (trim($block) === '') continue;
+        
+        $block = $block . '</url>'; // Re-add the closing tag
+        $final_xml .= $block; // Always keep the original English block
+
+        // 2. Find the <loc> URL inside this block
+        if (preg_match('/<loc>(.*?)<\/loc>/is', $block, $matches)) {
+            $original_url = $matches[1];
             $parsed = parse_url($original_url);
+
             if (isset($parsed['host'])) {
                 foreach ($langs as $lang) {
+                    // 3. Inject the language code (e.g. /fr/)
                     $host_pos = strpos($original_url, $parsed['host']) + strlen($parsed['host']);
-                    // Inject the language code (e.g. /fr/)
                     $ghost_url = substr($original_url, 0, $host_pos) . '/' . $lang . substr($original_url, $host_pos);
                     
-                    // Rebuild the new block exactly like the old one, but with the new URL
-                    $new_block = '<url>' . $before_loc . '<loc>' . $ghost_url . '</loc>' . $after_loc . '</url>';
-                    $injected_blocks .= "\n" . $new_block;
+                    // 4. Create the new block by simply replacing the <loc> string
+                    $new_block = str_replace('<loc>' . $original_url . '</loc>', '<loc>' . $ghost_url . '</loc>', $block);
+                    $final_xml .= "\n" . $new_block;
                 }
             }
+        }
+    }
 
-            // Return the original + the translated versions
-            return $original_block . $injected_blocks;
-        }, 
-        $xml_content
-    );
+    return $final_xml;
+}
 
-    return $xml_content;
+// ==========================================
+// 6. SITEMAP 301 REDIRECT (SEO CLEANUP)
+// ==========================================
+// Forces the weak native WordPress sitemap to redirect to the powerful Rank Math sitemap
+add_action('template_redirect', 'bw_ghost_force_sitemap_redirect', 1);
+function bw_ghost_force_sitemap_redirect() {
+    $uri = $_SERVER['REQUEST_URI'];
+    if (strpos($uri, 'wp-sitemap.xml') !== false) {
+        wp_redirect(home_url('/sitemap_index.xml'), 301);
+        exit;
+    }
 }

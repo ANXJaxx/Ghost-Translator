@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BW Empire Ghost Translator
  * Description: 100% Safe translations using DeepL API, Database Storage (Post Meta), and Rank Math Sitemap Integration.
- * Version: 2.3.0
+ * Version: 2.4.0
  * Author: BW Empire
  */
 
@@ -270,57 +270,98 @@ function bw_ghost_hreflang_tags() {
 }
 
 // ==========================================
-// 5. RANK MATH SITEMAP INJECTION (THE BULLETPROOF FIX)
+// 5. THE DEDICATED TRANSLATIONS SITEMAP (ENTERPRISE STANDARD)
 // ==========================================
-$target_post_types =['post', 'page', 'seo_tool', 'glossary'];
 
-foreach ($target_post_types as $pt) {
-    add_filter("rank_math/sitemap/{$pt}_content", 'bw_ghost_inject_sitemap_urls_simple', 99, 1);
+// 1. Add our custom translations sitemap to Rank Math's main index
+add_filter('rank_math/sitemap/index', 'bw_add_intl_sitemap_to_index');
+function bw_add_intl_sitemap_to_index($xml) {
+    $intl_sitemap_url = home_url('/translations-sitemap.xml');
+    
+    // Inject into the main sitemap_index.xml
+    $xml .= '<sitemap>' . "\n";
+    $xml .= '<loc>' . esc_url($intl_sitemap_url) . '</loc>' . "\n";
+    $xml .= '<lastmod>' . date('c') . '</lastmod>' . "\n";
+    $xml .= '</sitemap>' . "\n";
+    
+    return $xml;
 }
 
-function bw_ghost_inject_sitemap_urls_simple($xml_content) {
-    $langs_setting = get_option('bw_ghost_languages', '');
-    if (empty($langs_setting) || empty($xml_content)) return $xml_content;
+// 2. Register the professional URL route for /translations-sitemap.xml
+add_action('init', 'bw_intl_sitemap_rewrite_rule');
+function bw_intl_sitemap_rewrite_rule() {
+    add_rewrite_rule('translations-sitemap\.xml$', 'index.php?bw_intl_sitemap=1', 'top');
+}
 
-    $langs = array_map('trim', explode(',', strtolower($langs_setting)));
+add_filter('query_vars', 'bw_intl_sitemap_query_vars');
+function bw_intl_sitemap_query_vars($vars) {
+    $vars[] = 'bw_intl_sitemap';
+    return $vars;
+}
 
-    // 1. Break the sitemap into individual <url> blocks
-    $url_blocks = explode('</url>', $xml_content);
-    $final_xml = '';
+// 3. Generate the actual XML output instantly
+add_action('template_redirect', 'bw_render_intl_sitemap');
+function bw_render_intl_sitemap() {
+    if (get_query_var('bw_intl_sitemap')) {
+        $langs_setting = get_option('bw_ghost_languages', '');
+        if (empty($langs_setting)) {
+            status_header(404);
+            exit;
+        }
 
-    foreach ($url_blocks as $block) {
-        // Skip empty blocks
-        if (trim($block) === '') continue;
+        $langs = array_map('trim', explode(',', strtolower($langs_setting)));
         
-        $block = $block . '</url>'; // Re-add the closing tag
-        $final_xml .= $block; // Always keep the original English block
+        // Output strict XML headers mapped for Google's xhtml standards
+        header('Content-Type: text/xml; charset=utf-8');
+        echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
+        echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">' . "\n";
 
-        // 2. Find the <loc> URL inside this block
-        if (preg_match('/<loc>(.*?)<\/loc>/is', $block, $matches)) {
-            $original_url = $matches[1];
-            $parsed = parse_url($original_url);
+        // Query all published content
+        $query = new WP_Query([
+            'post_type' => ['post', 'page', 'seo_tool', 'glossary'],
+            'post_status' => 'publish',
+            'posts_per_page' => -1,
+            'fields' => 'ids'
+        ]);
 
-            if (isset($parsed['host'])) {
-                foreach ($langs as $lang) {
-                    // 3. Inject the language code (e.g. /fr/)
-                    $host_pos = strpos($original_url, $parsed['host']) + strlen($parsed['host']);
-                    $ghost_url = substr($original_url, 0, $host_pos) . '/' . $lang . substr($original_url, $host_pos);
-                    
-                    // 4. Create the new block by simply replacing the <loc> string
-                    $new_block = str_replace('<loc>' . $original_url . '</loc>', '<loc>' . $ghost_url . '</loc>', $block);
-                    $final_xml .= "\n" . $new_block;
+        if ($query->have_posts()) {
+            foreach ($query->posts as $post_id) {
+                $original_url = get_permalink($post_id);
+                $modified_date = get_the_modified_date('c', $post_id);
+                $parsed = parse_url($original_url);
+
+                if (isset($parsed['host'])) {
+                    // Output the Dedicated Foreign URLs
+                    foreach ($langs as $lang) {
+                        $host_pos = strpos($original_url, $parsed['host']) + strlen($parsed['host']);
+                        $foreign_url = substr($original_url, 0, $host_pos) . '/' . $lang . substr($original_url, $host_pos);
+
+                        echo "\t" . '<url>' . "\n";
+                        echo "\t\t" . '<loc>' . esc_url($foreign_url) . '</loc>' . "\n";
+                        echo "\t\t" . '<lastmod>' . esc_html($modified_date) . '</lastmod>' . "\n";
+                        
+                        // Google Standard Hreflang Relationships
+                        echo "\t\t" . '<xhtml:link rel="alternate" hreflang="en" href="' . esc_url($original_url) . '" />' . "\n";
+                        echo "\t\t" . '<xhtml:link rel="alternate" hreflang="x-default" href="' . esc_url($original_url) . '" />' . "\n";
+                        
+                        foreach ($langs as $alt_lang) {
+                            $alt_foreign_url = substr($original_url, 0, $host_pos) . '/' . $alt_lang . substr($original_url, $host_pos);
+                            echo "\t\t" . '<xhtml:link rel="alternate" hreflang="' . esc_attr($alt_lang) . '" href="' . esc_url($alt_foreign_url) . '" />' . "\n";
+                        }
+                        echo "\t" . '</url>' . "\n";
+                    }
                 }
             }
         }
-    }
 
-    return $final_xml;
+        echo '</urlset>';
+        exit;
+    }
 }
 
 // ==========================================
 // 6. SITEMAP 301 REDIRECT (SEO CLEANUP)
 // ==========================================
-// Forces the weak native WordPress sitemap to redirect to the powerful Rank Math sitemap
 add_action('template_redirect', 'bw_ghost_force_sitemap_redirect', 1);
 function bw_ghost_force_sitemap_redirect() {
     $uri = $_SERVER['REQUEST_URI'];

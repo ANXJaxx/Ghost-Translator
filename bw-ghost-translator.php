@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BW Empire Ghost Translator
  * Description: Elite Enterprise translations. Features Early-Exit, Mutex Locking, Global API Circuit Breaker, and SEO Failsafes.
- * Version: 3.1.0
+ * Version: 3.2.0
  * Author: BW Empire
  */
 
@@ -28,7 +28,7 @@ try {
 }
 
 // ==========================================
-// 2. SETTINGS PAGE & DB CLEANUP
+// 2. SETTINGS PAGE & DB CLEANUP (SEPARATED)
 // ==========================================
 if ( ! function_exists( 'bw_ghost_translator_menu' ) ) {
     add_action('admin_menu', 'bw_ghost_translator_menu');
@@ -44,10 +44,24 @@ function bw_ghost_register_settings() {
 }
 
 function bw_ghost_settings_page() {
+    // SECURITY: Listen for the custom "Clear Cache" button click
+    if (isset($_POST['bw_clear_cache_nonce']) && wp_verify_nonce($_POST['bw_clear_cache_nonce'], 'bw_clear_cache_action')) {
+        try {
+            global $wpdb;
+            $wpdb->query("DELETE FROM {$wpdb->postmeta} WHERE meta_key LIKE '_bw_trans_html_%'");
+            $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE '_bw_trans_opt_%'");
+            delete_transient('bw_ghost_api_cooldown'); // Reset circuit breaker
+            echo '<div class="notice notice-success is-dismissible"><p>✅ <b>Success:</b> All translated cache has been permanently deleted from the database.</p></div>';
+        } catch ( \Throwable $e ) {
+            echo '<div class="notice notice-error is-dismissible"><p>Error clearing cache: ' . esc_html($e->getMessage()) . '</p></div>';
+        }
+    }
     ?>
     <div class="wrap">
-        <h2>👻 BW Empire Ghost Translator (v3.1 Elite Edition)</h2>
+        <h2>👻 BW Empire Ghost Translator (v3.2 Elite Edition)</h2>
         <p>Enterprise Edge Cache + Global Circuit Breaker + SEO Failsafes.</p>
+        
+        <!-- SAFE ZONE: Standard Settings -->
         <form method="post" action="options.php">
             <?php settings_fields('bw_ghost_group'); ?>
             <table class="form-table">
@@ -57,21 +71,29 @@ function bw_ghost_settings_page() {
                 </tr>
                 <tr valign="top">
                     <th scope="row">Target Languages (Comma separated)</th>
-                    <td><input type="text" name="bw_ghost_languages" value="<?php echo esc_attr(get_option('bw_ghost_languages', 'ES,FR,DE')); ?>" style="width:400px;" /></td>
+                    <td>
+                        <input type="text" name="bw_ghost_languages" value="<?php echo esc_attr(get_option('bw_ghost_languages', 'ES,FR,DE')); ?>" style="width:400px;" />
+                        <br><small><b>Safe to edit:</b> Adding new languages here will NOT delete your existing database translations.</small>
+                    </td>
                 </tr>
             </table>
-            <?php submit_button('Save Settings & Clear Database Cache'); ?>
+            <?php submit_button('Save Settings (Keeps Existing Translations)'); ?>
         </form>
+
+        <hr style="margin-top:40px; margin-bottom:30px;">
+        
+        <!-- DANGER ZONE: Clear Cache Form -->
+        <div style="background: #fff; border-left: 4px solid #d63638; padding: 20px; max-width: 800px; box-shadow: 0 1px 1px rgba(0,0,0,.04);">
+            <h3 style="margin-top:0; color:#d63638;">Danger Zone: Clear Translation Database</h3>
+            <p>Use this button <b>ONLY</b> if you have updated your English articles and need to force DeepL to re-translate the foreign versions from scratch.</p>
+            <p><i>Warning: This will permanently delete all saved translations and will use DeepL API credits to rebuild them as visitors arrive.</i></p>
+            <form method="post" action="">
+                <?php wp_nonce_field('bw_clear_cache_action', 'bw_clear_cache_nonce'); ?>
+                <?php submit_button('⚠️ Clear All Translated Cache', 'delete', 'submit', false, ['onclick' => 'return confirm("Are you absolutely sure? This will delete all saved translations from your database!");']); ?>
+            </form>
+        </div>
     </div>
     <?php
-    if (isset($_GET['settings-updated'])) {
-        try {
-            global $wpdb;
-            $wpdb->query("DELETE FROM {$wpdb->postmeta} WHERE meta_key LIKE '_bw_trans_html_%'");
-            $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE '_bw_trans_opt_%'");
-            delete_transient('bw_ghost_api_cooldown'); // Reset circuit breaker
-        } catch ( \Throwable $e ) {}
-    }
 }
 
 // ==========================================
@@ -180,18 +202,15 @@ function bw_ghost_translate_html($html) {
             return is_string($html) ? $html : '';
         }
 
-        // 🛑 1. Memory Limit Protection
         if (strlen($html) > 1000000) { 
             error_log("[Ghost Translator] Page too large: " . strlen($html) . " bytes.");
             return bw_ghost_seo_emergency_fallback($html);
         }
 
-        // 🛑 2. The Circuit Breaker (Global API Cooldown)
         if (get_transient('bw_ghost_api_cooldown')) {
             return bw_ghost_seo_emergency_fallback($html);
         }
 
-        // 🛑 3. Mutex Lock (Stampede Protection)
         if (get_transient($lock_key)) {
             return bw_ghost_seo_emergency_fallback($html); 
         }
@@ -232,7 +251,6 @@ function bw_ghost_translate_html($html) {
         ));
 
         if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
-            // Trigger the Circuit Breaker: Block API globally for 60 seconds
             set_transient('bw_ghost_api_cooldown', true, 60);
             error_log("[Ghost Translator] DeepL Failure. Circuit Breaker triggered for 60s.");
             return bw_ghost_seo_emergency_fallback($html);
@@ -301,7 +319,6 @@ function bw_ghost_translate_html($html) {
         error_log("[Ghost Translator] Fatal inside buffer: " . $e->getMessage());
         return bw_ghost_seo_emergency_fallback($html);
     } finally {
-        // 🛑 4. Elite Cleanup: ALWAYS remove the Mutex Lock even if PHP crashes
         delete_transient($lock_key);
     }
 }
